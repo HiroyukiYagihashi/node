@@ -7,6 +7,7 @@ const path = require('path');
 const tmpdir = require('../common/tmpdir');
 const assert = require('assert');
 const tmpDir = tmpdir.path;
+const { Readable } = require('stream');
 
 tmpdir.refresh();
 
@@ -14,11 +15,66 @@ const dest = path.resolve(tmpDir, 'tmp.txt');
 const otherDest = path.resolve(tmpDir, 'tmp-2.txt');
 const buffer = Buffer.from('abc'.repeat(1000));
 const buffer2 = Buffer.from('xyz'.repeat(1000));
+const stream = Readable.from(['a', 'b', 'c']);
+const iterable = {
+  expected: 'abc',
+  *[Symbol.iterator]() {
+    yield 'a';
+    yield 'b';
+    yield 'c';
+  }
+};
+const asyncIterable = {
+  expected: 'abc',
+  async* [Symbol.asyncIterator]() {
+    yield 'a';
+    yield 'b';
+    yield 'c';
+  }
+};
 
 async function doWrite() {
   await fsPromises.writeFile(dest, buffer);
   const data = fs.readFileSync(dest);
   assert.deepStrictEqual(data, buffer);
+}
+
+async function doWriteStream() {
+  await fsPromises.writeFile(dest, stream);
+  const expected = 'abc';
+  const data = fs.readFileSync(dest, 'utf-8');
+  assert.deepStrictEqual(data, expected);
+}
+
+async function doWriteStreamWithCancel() {
+  const controller = new AbortController();
+  const { signal } = controller;
+  process.nextTick(() => controller.abort());
+  assert.rejects(fsPromises.writeFile(otherDest, stream, { signal }), {
+    name: 'AbortError'
+  });
+}
+
+async function doWriteIterable() {
+  await fsPromises.writeFile(dest, iterable);
+  const data = fs.readFileSync(dest, 'utf-8');
+  assert.deepStrictEqual(data, iterable.expected);
+}
+
+async function doWriteAsyncIterable() {
+  await fsPromises.writeFile(dest, asyncIterable);
+  const data = fs.readFileSync(dest, 'utf-8');
+  assert.deepStrictEqual(data, asyncIterable.expected);
+}
+
+async function doWriteInvalidValues() {
+  await Promise.all(
+    [42, 42n, {}, Symbol('42'), true, undefined, null, NaN].map((value) =>
+      assert.rejects(fsPromises.writeFile(dest, value), {
+        code: 'ERR_INVALID_ARG_TYPE',
+      })
+    )
+  );
 }
 
 async function doWriteWithCancel() {
@@ -50,9 +106,15 @@ async function doReadWithEncoding() {
   assert.deepStrictEqual(data, syncData);
 }
 
-doWrite()
-  .then(doWriteWithCancel)
-  .then(doAppend)
-  .then(doRead)
-  .then(doReadWithEncoding)
-  .then(common.mustCall());
+(async () => {
+  await doWrite();
+  await doWriteWithCancel();
+  await doAppend();
+  await doRead();
+  await doReadWithEncoding();
+  await doWriteStream();
+  await doWriteStreamWithCancel();
+  await doWriteIterable();
+  await doWriteAsyncIterable();
+  await doWriteInvalidValues();
+})().then(common.mustCall());
